@@ -1,0 +1,101 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  API serverless de encurtador de URLs — Lambda + API Gateway + DynamoDB.
+  Prova de conceito em código do guia "Arquitetando AWS".
+
+Globals:
+  Function:
+    Runtime: python3.12
+    Timeout: 5
+    MemorySize: 128
+    Environment:
+      Variables:
+        TABLE_NAME: !Ref ShortUrlsTable
+
+Resources:
+
+  # ---------- Banco de dados ----------
+  ShortUrlsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "${AWS::StackName}-ShortUrls"
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: shortCode
+          AttributeType: S
+      KeySchema:
+        - AttributeName: shortCode
+          KeyType: HASH
+
+  # ---------- Funções Lambda ----------
+
+  CreateUrlFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/create_url/
+      Handler: app.handler
+      Description: Recebe uma URL longa e gera um código curto único
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref ShortUrlsTable
+      Events:
+        CreateUrl:
+          Type: Api
+          Properties:
+            RestApiId: !Ref ShortenerApi
+            Path: /urls
+            Method: POST
+
+  RedirectFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/redirect/
+      Handler: app.handler
+      Description: Redireciona um código curto para a URL original e incrementa o contador de cliques
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref ShortUrlsTable
+      Events:
+        Redirect:
+          Type: Api
+          Properties:
+            RestApiId: !Ref ShortenerApi
+            Path: /{shortCode}
+            Method: GET
+
+  GetStatsFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/get_stats/
+      Handler: app.handler
+      Description: Retorna estatísticas de um código curto (cliques, data de criação, URL original)
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref ShortUrlsTable
+      Events:
+        GetStats:
+          Type: Api
+          Properties:
+            RestApiId: !Ref ShortenerApi
+            Path: /urls/{shortCode}/stats
+            Method: GET
+
+  # ---------- API Gateway ----------
+  ShortenerApi:
+    Type: AWS::Serverless::Api
+    Properties:
+      StageName: prod
+      Cors:
+        AllowMethods: "'GET,POST,OPTIONS'"
+        AllowHeaders: "'Content-Type'"
+        AllowOrigin: "'*'"
+
+Outputs:
+  ApiBaseUrl:
+    Description: URL base da API implantada
+    Value: !Sub "https://${ShortenerApi}.execute-api.${AWS::Region}.amazonaws.com/prod/"
+
+  ShortUrlsTableName:
+    Description: Nome da tabela DynamoDB criada
+    Value: !Ref ShortUrlsTable
