@@ -4,6 +4,7 @@ import string
 import random
 import time
 import boto3
+from urllib.parse import urlparse
 
 dynamodb = boto3.resource("dynamodb")
 table = dynamodb.Table(os.environ["TABLE_NAME"])
@@ -31,6 +32,10 @@ def handler(event, context):
 
     if len(original_url) > 2048:
         return _response(400, {"error": "A URL passou de 2048 caracteres."})
+
+    parsed = urlparse(original_url)
+    if parsed.username or parsed.password or any(char.isspace() for char in original_url):
+        return _response(400, {"error": "A URL não pode ter usuário, senha ou espaços."})
 
     # Gera um código curto único, tentando de novo em caso de colisão rara
     for _ in range(5):
