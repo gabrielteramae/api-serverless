@@ -29,6 +29,9 @@ def handler(event, context):
     if not (original_url.startswith("http://") or original_url.startswith("https://")):
         return _response(400, {"error": "A URL deve começar com http:// ou https://."})
 
+    if len(original_url) > 2048:
+        return _response(400, {"error": "A URL passou de 2048 caracteres."})
+
     # Gera um código curto único, tentando de novo em caso de colisão rara
     for _ in range(5):
         short_code = generate_short_code()
