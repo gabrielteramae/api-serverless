@@ -1,121 +1,90 @@
-# 🔗 URL Shortener Serverless — AWS Lambda + API Gateway + DynamoDB
+# Encurtador serverless — três Lambdas e uma tabela DynamoDB
 
-![AWS SAM](https://img.shields.io/badge/AWS-SAM-FF9900?style=flat&logo=amazonaws&logoColor=white)
-![Python](https://img.shields.io/badge/Python-3.12-3776AB?style=flat&logo=python&logoColor=white)
-![Status](https://img.shields.io/badge/status-testado%20com%20moto-brightgreen?style=flat)
+![Python](https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white)
+![AWS Lambda](https://img.shields.io/badge/AWS_Lambda-FF9900?logo=awslambda&logoColor=white)
+![Amazon DynamoDB](https://img.shields.io/badge/DynamoDB-4053D6?logo=amazondynamodb&logoColor=white)
+![AWS SAM](https://img.shields.io/badge/AWS_SAM-232F3E?logo=amazonaws&logoColor=white)
 
-Prova de conceito em código do guia [Arquitetando AWS](../arquitetando-aws): uma API de encurtador de URLs 100% serverless, usando **Lambda**, **API Gateway** e **DynamoDB**, com infraestrutura definida em código via **AWS SAM**.
+Encurtador separado em três funções (criar, redirecionar, estatística) atrás de um API Gateway. A tabela é DynamoDB on-demand, chave `shortCode`. O contador de cliques sobe com `ADD` atômico no próprio redirect.
 
-## 🧠 Por que este exemplo
+## Por que três funções
 
-Encurtador de URL é o "hello world" clássico de arquitetura serverless porque, em pouco código, cobre os três padrões mais comuns do modelo:
-- **Escrita simples** (criar um registro) → `POST /urls`
-- **Leitura de alta frequência com efeito colateral** (redirecionar e contar) → `GET /{shortCode}`
-- **Leitura de consulta** (estatísticas) → `GET /urls/{shortCode}/stats`
+| Escolha | Efeito |
+| --- | --- |
+| Uma Lambda por rota, no `template.yaml` | Timeout e memória iguais (5 s, 128 MB), mas o código de cada rota fica isolado. |
+| Uma função que lê o path | Menos artefato. Um bug no redirect derruba a criação. |
+| `put_item` com `attribute_not_exists(shortCode)` | Código de 7 caracteres; até 5 tentativas se colidir. |
+| `update_item` com `ADD clickCount` | Não faz get e put separados, que perderiam clique concorrente. |
+| HTTP 302, não 301 | O navegador não cacheia o destino, então o próximo acesso volta a contar. |
 
-## 🏗️ Arquitetura
+Não há TTL, autenticação nem alias. CORS libera `*` para GET, POST e OPTIONS. O clique incrementa quando a função responde, mesmo que o cliente ignore o `Location`.
 
-```mermaid
-graph LR
-    Client[Cliente] -->|POST /urls| APIGW[API Gateway]
-    Client -->|GET /shortCode| APIGW
-    Client -->|GET /urls/shortCode/stats| APIGW
+## Stack
 
-    APIGW --> CreateFn[Lambda: CreateUrl]
-    APIGW --> RedirectFn[Lambda: Redirect]
-    APIGW --> StatsFn[Lambda: GetStats]
+- Python 3.12 (runtime no `template.yaml`)
+- AWS SAM (`AWS::Serverless-2016-10-31`)
+- API Gateway, estágio `prod`
+- DynamoDB `PAY_PER_REQUEST`
+- boto3 nas funções (não há `requirements.txt`; a runtime da Lambda já traz boto3)
+- Testes locais com `moto` (`mock_aws`), também sem versão pinada
 
-    CreateFn --> DDB[(DynamoDB: ShortUrls)]
-    RedirectFn --> DDB
-    StatsFn --> DDB
+## Estrutura
+
+```
+template.yaml
+src/
+├── create_url/app.py   # POST /urls
+├── redirect/app.py     # GET /{shortCode}
+└── get_stats/app.py    # GET /urls/{shortCode}/stats
+tests/
+├── test_create_url.py  # script, não pytest
+└── test_full_flow.py
 ```
 
-## 📦 Endpoints
+## Como rodar
 
-| Método | Rota | O que faz |
-|---|---|---|
-| `POST` | `/urls` | Recebe `{"url": "https://..."}`, gera um código curto único e salva |
-| `GET` | `/{shortCode}` | Redireciona (302) para a URL original e incrementa `clickCount` |
-| `GET` | `/urls/{shortCode}/stats` | Retorna `originalUrl`, `createdAt` e `clickCount` |
-
-## ✅ Testado antes de subir pra AWS
-
-Os 3 handlers foram testados localmente com [`moto`](https://github.com/getmoto/moto) (mock de DynamoDB), cobrindo:
-- Criação de URL válida e inválida (URL vazia, sem `http(s)://`, JSON malformado)
-- Redirecionamento com incremento atômico de cliques (`update_item` com `ADD`, evitando race condition de fazer get+put separado)
-- Fluxo completo: criar → redirecionar 3x → conferir que `clickCount == 3`
-- Casos de erro: código inexistente retorna `404` tanto no redirect quanto nas estatísticas
-
-## 🚀 Como rodar
-
-### Pré-requisitos
-- [AWS SAM CLI](https://docs.aws.amazon.com/serverless-application-model/latest/developerguide/install-sam-cli.html)
-- Uma conta AWS configurada (`aws configure`)
-- Docker (para testar localmente antes do deploy)
-
-### 1. Build
+Não há Dockerfile no repositório. O `sam local` puxa a imagem de runtime da AWS e exige Docker e AWS SAM CLI, que não estão declarados aqui.
 
 ```bash
+git clone https://github.com/gabrielteramae/api-serverless.git
+cd api-serverless
 sam build
-```
-
-### 2. Testar localmente (sem custo, sem subir nada pra AWS ainda)
-
-```bash
 sam local start-api
 ```
 
-Isso sobe a API em `http://localhost:3000`. Em outro terminal:
-
-```bash
-# Criar uma URL curta
-curl -X POST http://localhost:3000/urls \
-  -H "Content-Type: application/json" \
-  -d '{"url": "https://github.com/gabrielteramae"}'
-
-# Redirecionar (troque {shortCode} pelo código retornado acima)
-curl -v http://localhost:3000/{shortCode}
-
-# Ver estatísticas
-curl http://localhost:3000/urls/{shortCode}/stats
-```
-
-> Nota: `sam local start-api` simula o Lambda localmente via Docker, mas ainda precisa de uma tabela DynamoDB real (local ou na AWS) — configure `AWS_SAM_LOCAL` com [DynamoDB Local](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/DynamoDBLocal.html) se quiser testar 100% offline.
-
-### 3. Deploy de verdade na AWS
+Deploy (conta AWS, credenciais e bucket SAM à parte):
 
 ```bash
 sam deploy --guided
 ```
 
-Na primeira vez, o `--guided` pergunta o nome da stack, região e confirma a criação dos recursos (Lambda, API Gateway, DynamoDB, roles IAM). As próximas vezes, basta `sam deploy`.
+A URL de saída do stack é `https://<api>.execute-api.<região>.amazonaws.com/prod/`.
 
-Ao final, o output mostra a URL da API (`ApiBaseUrl`) — é só trocar `localhost:3000` pela URL real nos `curl` acima.
+## Endpoints
 
-### 4. Destruir tudo (evitar custos)
+| Método | Rota | Resposta |
+| --- | --- | --- |
+| POST | `/urls` | 201 com `shortCode`, `shortUrl`, `originalUrl`. Corpo `{"url":"https://..."}` |
+| GET | `/{shortCode}` | 302 com `Location` da URL original; 404 se o código não existe |
+| GET | `/urls/{shortCode}/stats` | `shortCode`, `originalUrl`, `createdAt` (epoch), `clickCount` |
+
+POST recusa JSON inválido, `url` vazia, sem `http://` ou `https://`, acima de 2048 caracteres, com usuário, senha ou espaço.
+
+## Testes realizados
+
+Não é suíte pytest e não há CI. Os dois arquivos são scripts com `moto.mock_aws` e uma tabela DynamoDB falsa.
+
+- `test_create_url.py`: URL válida gera código de 7 caracteres e grava `clickCount` 0; URL vazia, sem esquema e JSON quebrado voltam 400.
+- `test_full_flow.py`: cria, redireciona 3 vezes (302), confere `clickCount == 3`, e 404 no redirect e nas stats de código inexistente.
+
+Os `sys.path` são relativos ao diretório atual (`../src/...`). Rode de dentro de `tests/`, com `boto3` e `moto` instalados (versões não pinadas):
 
 ```bash
-sam delete
+pip install boto3 moto
+cd tests
+python test_create_url.py
+python test_full_flow.py
 ```
-
-## 🔍 Rodar os testes unitários (mock, sem AWS)
-
-```bash
-pip install boto3 moto[dynamodb]
-python3 tests/test_create_url.py
-python3 tests/test_full_flow.py
-```
-
-## 💰 Custo esperado
-
-Com o **free tier da AWS**, esse projeto roda essencialmente de graça para uso de portfólio/demonstração:
-- Lambda: 1M requisições grátis/mês
-- API Gateway: 1M chamadas grátis/mês (nos primeiros 12 meses)
-- DynamoDB: 25GB de armazenamento grátis (on-demand tem custo por requisição, mas irrisório nesse volume)
-
-## 🗺️ Relação com o guia de arquitetura
-
-Este projeto aplica diretamente a "regra prática" do [guia Arquitetando AWS](../arquitetando-aws/README.md#1-computação): carga esporádica e orientada a evento → Lambda. Não existe servidor rodando 24/7 — cada requisição aciona uma função, e você paga só pelo que usa.
 
 ---
 
