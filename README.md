@@ -17,7 +17,7 @@ Encurtador separado em três funções (criar, redirecionar, estatística) atrá
 | `update_item` com `ADD clickCount` | Não faz get e put separados, que perderiam clique concorrente. |
 | HTTP 302, não 301 | O navegador não cacheia o destino, então o próximo acesso volta a contar. |
 
-Não há TTL, autenticação nem alias. CORS libera `*` para GET, POST e OPTIONS. O clique incrementa quando a função responde, mesmo que o cliente ignore o `Location`.
+Não há TTL, autenticação nem alias. CORS libera `*` para GET, POST e OPTIONS. O clique incrementa quando a função responde, mesmo que o cliente ignore o `Location`. Cada função tem um alarme CloudWatch: um erro em cinco minutos abre o alarme.
 
 ## Stack
 
@@ -26,12 +26,15 @@ Não há TTL, autenticação nem alias. CORS libera `*` para GET, POST e OPTIONS
 - API Gateway, estágio `prod`
 - DynamoDB `PAY_PER_REQUEST`
 - boto3 nas funções (não há `requirements.txt`; a runtime da Lambda já traz boto3)
-- Testes locais com `moto` (`mock_aws`), também sem versão pinada
+- Testes locais com `moto` (`mock_aws`), versões em `requirements-dev.txt`
+- CloudWatch alarm nas três funções
 
 ## Estrutura
 
 ```
 template.yaml
+requirements-dev.txt
+.github/workflows/test.yml
 src/
 ├── create_url/app.py   # POST /urls
 ├── redirect/app.py     # GET /{shortCode}
@@ -72,7 +75,7 @@ POST recusa JSON inválido, `url` vazia, sem `http://` ou `https://`, acima de 2
 
 ## Testes realizados
 
-Não é suíte pytest e não há CI. Os dois arquivos são scripts com `moto.mock_aws` e uma tabela DynamoDB falsa.
+Não é suíte pytest. Os dois arquivos são scripts com `moto.mock_aws` e uma tabela DynamoDB falsa. O workflow `.github/workflows/test.yml` roda os dois em Python 3.12.
 
 - `test_create_url.py`: URL válida gera código de 7 caracteres e grava `clickCount` 0; URL vazia, sem esquema e JSON quebrado voltam 400.
 - `test_full_flow.py`: cria, redireciona 3 vezes (302), confere `clickCount == 3`, e 404 no redirect e nas stats de código inexistente.
@@ -80,7 +83,7 @@ Não é suíte pytest e não há CI. Os dois arquivos são scripts com `moto.moc
 Os `sys.path` são relativos ao diretório atual (`../src/...`). Rode de dentro de `tests/`, com `boto3` e `moto` instalados (versões não pinadas):
 
 ```bash
-pip install boto3 moto
+pip install -r requirements-dev.txt
 cd tests
 python test_create_url.py
 python test_full_flow.py
